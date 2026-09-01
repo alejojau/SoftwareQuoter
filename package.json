@@ -1,0 +1,30 @@
+{
+  "name": "software-quoter",
+  "version": "0.1.0",
+  "description": "A software development quoter tool that estimates time, complexity, and costs based on requirements and technologies",
+  "main": "server.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "node server.js",
+    "client": "cd client && npm start",
+    "build": "cd client && npm run build",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "quoter",
+    "estimation",
+    "software-development",
+    "pricing",
+    "project-management"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3"
+  },
+  "devDependencies": {
+    "concurrently": "^7.6.0"
+  }
+}
