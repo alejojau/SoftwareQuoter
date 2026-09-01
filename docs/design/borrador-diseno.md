@@ -87,8 +87,9 @@ pendientes de aprobar) y `pausado` (el usuario lo dejó y retomó otro).
 
 ```
 pendiente → generando → borrador → en_revision_humana → aprobado
-                                        ↑                    │
-                                        └─── ajuste pedido ───┘
+               │  ↑                     ↑                    │
+               │  └── esperando_respuesta (ask_user bloqueante)
+               │                         └─── ajuste pedido ───┘
 
 aprobado → obsoleto (por invalidación) → regenerando → borrador (nueva versión)
 ```
@@ -96,6 +97,10 @@ aprobado → obsoleto (por invalidación) → regenerando → borrador (nueva ve
 Un documento `obsoleto` **no se borra**: la versión anterior sigue visible y
 consultable mientras se regenera la nueva (soporta el requisito de "ver
 resultados parciales" y trazabilidad histórica).
+
+`esperando_respuesta` es un sub-estado de `generando`: bloquea únicamente
+**ese** `DocumentNode`, no el proyecto — otros agentes sin esa dependencia
+siguen corriendo en paralelo (ver 3.1).
 
 ---
 
@@ -111,6 +116,44 @@ resultados parciales" y trazabilidad histórica).
 | **Arquitecto** | Junto con o después de Alcance | `Requirements` (RNF) + `Scope` | `save_document(ArchitectureDoc)`, `create_adr` | `ArchitectureDoc` + `ADR[]` | Toda decisión "grande" (stack, patrón arquitectónico, colas, balanceo, orquestación de contenedores, BD) requiere un ADR con los RNF que la motivaron |
 | **Generador de Cotización** | `Scope` + `ArchitectureDoc` aprobados | Ambos + parámetros de costeo | `render_pdf` | `Quote` (PDF + doc técnico consolidado) | — |
 | **Orquestador / Gestor de Cambios** | Cualquier `ChangeEvent` | Grafo de dependencias | — | `InvalidationRun` | Ver algoritmo abajo |
+
+### 3.1 Modelo de `ask_user`
+
+No todas las preguntas de un agente se tratan igual:
+
+- **Bloqueante (crítica):** el agente no puede producir nada razonable sin
+  la respuesta (ej. el Elicitador sin país/industria). El `DocumentNode`
+  entra en el sub-estado `esperando_respuesta`. Esto bloquea solo ese
+  documento — otros agentes del mismo proyecto sin esa dependencia siguen
+  corriendo, porque cada uno es un job independiente.
+- **No bloqueante (aclaratoria):** el agente sigue y produce un borrador
+  razonable, marcando la parte afectada como `supuesto: no_confirmado`.
+  Cuando el usuario responde después, se genera un `ChangeEvent` normal,
+  procesado por el mismo algoritmo de invalidación de la sección 4 — no es
+  un caso especial.
+- Una pregunta bloqueante no espera indefinidamente: pasado un tiempo
+  configurable sin respuesta, el agente puede avanzar igual con un supuesto
+  documentado, dejando constancia explícita de que no fue confirmado por el
+  usuario (nunca deja el proyecto trabado en silencio).
+
+### 3.2 Reglas adicionales del agente Legal/Normativo
+
+- **Conflicto entre fuentes:** si dos fuentes primarias (o una primaria y
+  una secundaria) se contradicen sobre la misma norma, el agente **no
+  decide por su cuenta**. El `LegalFinding` se marca `conflicto: true`, cita
+  ambas fuentes, baja su `confianza` a `baja`, y recomienda validación con
+  asesor legal en ese punto puntual. Solo resuelve automáticamente el caso
+  trivial y no ambiguo de jerarquía normativa clara (norma posterior deroga
+  a una anterior de igual jerarquía), y aun así deja anotado el criterio
+  aplicado — nunca lo oculta.
+- **Jurisdicción nacional vs. local/municipal:** no se reemplazan entre sí.
+  La normativa nacional aplica siempre como base; la local/municipal se
+  **añade** cuando es más específica o restrictiva (permisos, tasas
+  locales, etc.). El agente solo evalúa nivel local si el `BusinessBrief`
+  tiene precisión suficiente (ciudad/región); si no la tiene y el dominio
+  del negocio típicamente depende de eso (ej. licencias), lo marca como
+  pendiente y pregunta en vez de asumir. Un conflicto directo entre niveles
+  que no sea trivial sigue la misma regla de conflicto de arriba.
 
 ---
 
@@ -180,7 +223,31 @@ receptor de la cotización sepa el nivel de validación real.
 
 ---
 
-## 7. Arquitectura técnica del propio sistema (alto nivel)
+## 7. Formato de las salidas (Quote y documento técnico)
+
+Se generan **dos documentos** a partir del mismo `Quote`/`ArchitectureDoc`
+versionados (dos plantillas de render, no dos fuentes de verdad distintas),
+porque tienen públicos distintos:
+
+**Cotización ejecutiva (PDF, cara al negocio):**
+1. Portada (proyecto, fecha, versión, cliente)
+2. Resumen ejecutivo (necesidad de negocio + alcance en un párrafo)
+3. Alcance por fases (MVP vs. completo, entregables por fase)
+4. Requerimientos clave (resumen de historias de usuario y NFR principales)
+5. Consideraciones normativas (resumen + disclaimer + fuentes principales)
+6. Estimación de costos y tiempos (desglose por fase/rol)
+7. Supuestos y riesgos, incluida la trazabilidad de qué quedó "sin revisión
+   humana" (sección 5)
+
+**Documento técnico (para el equipo que construye):**
+Todo lo anterior en detalle, más:
+8. Arquitectura propuesta completa (diagrama de componentes, stack)
+9. Anexo: todos los ADRs
+10. Anexo: hallazgos legales y de mercado completos, con fuentes
+
+---
+
+## 8. Arquitectura técnica del propio sistema (alto nivel)
 
 - **Backend:** Node/Express (ya existe base en el repo) + capa de
   orquestación de agentes + WebSocket (ej. socket.io) para el chat en vivo.
@@ -199,10 +266,21 @@ receptor de la cotización sepa el nivel de validación real.
 
 ---
 
-## 8. Abierto para siguiente ronda
+## 9. Decidido en esta ronda
 
-- Modelo exacto de `ask_user` (¿bloquea al agente hasta respuesta, o el
-  agente sigue con otras tareas mientras espera?).
-- Formato exacto del `Quote` en PDF (secciones, plantilla visual).
-- Política de conflicto cuando dos fuentes legales se contradicen.
-- Priorización de jurisdicción nacional vs. local/municipal.
+- Modelo de `ask_user`: bloqueante vs. aclaratoria, bloqueo por documento no
+  por proyecto, con expiración a supuesto documentado (sección 3.1).
+- Formato de salida: dos documentos (cotización ejecutiva + documento
+  técnico) sobre la misma fuente de verdad (sección 7).
+- Conflicto entre fuentes legales: nunca se resuelve solo si hay ambigüedad
+  real; se marca y se escala a revisión humana (sección 3.2).
+- Jurisdicción nacional vs. local: se acumulan, no se reemplazan; local solo
+  se evalúa con precisión de ubicación suficiente (sección 3.2).
+
+## 10. Abierto para siguiente ronda
+
+- Tiempo de espera exacto (timeout) antes de que una pregunta bloqueante
+  pase a supuesto documentado, y si es configurable por proyecto o fijo.
+- Plantilla visual exacta del PDF (branding, diagramas embebidos).
+- Cómo se representa visualmente en el chat un documento en
+  `esperando_respuesta` vs. uno simplemente `generando`.
