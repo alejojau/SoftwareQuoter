@@ -8,7 +8,10 @@ Workspace
      ├─ ProjectMember (user_id, roles[]: NEGOCIO | ANALISTA | ARQUITECTO) [RF-02]
      ├─ ChatSession
      │   └─ Message (autor, contenido, tipo, timestamp, refs a DocumentNode)
-     ├─ DocumentNode (tipo, estado, current_version_id)
+     ├─ DocumentNode (tipo, estado, current_version_id,
+     │                pending_changes[]: resumen de ajustes acumulados
+     │                sobre el borrador de trabajo desde la última
+     │                versión confirmada)                              [RF-25]
      │   └─ DocumentVersion (numero, contenido, generado_por,
      │                       inputs_usados[] -> otras DocumentVersion,
      │                       aprobado_por, aprobado_at)                  [RNF-05]
@@ -55,18 +58,37 @@ cumpliendo RF-01).
 ### 2.2 Estado de `DocumentNode` (el que importa para el motor evolutivo)
 
 ```
-pendiente → generando → borrador → en_revision_humana → aprobado
-               │  ↑                     ↑                    │
-               │  └── esperando_respuesta (ask_user bloqueante)
-               │                         └─── ajuste pedido ───┘
+pendiente → generando → borrador (de trabajo) ⇄ en_revision_humana
+               │  ↑                                    │
+               │  └── esperando_respuesta               │
+               │      (ask_user bloqueante)              │
+               │                                checkpoint (RF-26)
+               │                                         ↓
+               └─────────────────────────────────→   aprobado
 
-aprobado → obsoleto (por invalidación) → regenerando → borrador (nueva versión)
+aprobado → obsoleto (por invalidación) → regenerando → borrador (de trabajo) → … → aprobado (nueva versión, vía checkpoint)
 ```
 
 Un documento `obsoleto` **no se borra**: la versión anterior sigue visible y
 consultable mientras se regenera la nueva — cumple RF-19 y RNF-05.
 `esperando_respuesta` es un sub-estado de `generando`: bloquea únicamente
 **ese** `DocumentNode`, no el proyecto (RNF-07).
+
+**Borrador de trabajo vs. `DocumentVersion` (RF-25, RF-26):** mientras un
+documento está en el ciclo `borrador ⇄ en_revision_humana`, los ajustes,
+correcciones o aclaraciones sucesivas del usuario (o de un nuevo `ask_user`
+respondido) **se acumulan sobre el mismo borrador de trabajo** — no crean
+una `DocumentVersion` nueva ni pasan por el motor evolutivo. El `DocumentNode`
+mantiene un `pending_changes[]` con el resumen de lo acumulado desde la
+última versión confirmada, visible en el chat.
+
+Solo en un **checkpoint** — el usuario confirma explícitamente ("ya quedó,
+genera la versión"), o el sistema detecta que la conversación sobre ese
+documento se estabilizó y pregunta "¿confirmamos esta versión?" — se
+consolida todo lo acumulado en **una única** `DocumentVersion` nueva, y
+**solo entonces** se evalúa si dispara un `ChangeEvent` hacia el motor
+evolutivo (§4). Esto evita que cinco aclaraciones seguidas generen cinco
+versiones y cinco cascadas de invalidación en vez de una.
 
 ---
 
@@ -93,14 +115,17 @@ No todas las preguntas de un agente se tratan igual:
   mismo proyecto sin esa dependencia siguen corriendo (RNF-07).
 - **No bloqueante (aclaratoria):** el agente sigue y produce un borrador
   razonable, marcando la parte afectada como `supuesto: no_confirmado`.
-  Cuando el usuario responde después, se genera un `ChangeEvent` normal,
-  procesado por el algoritmo de §4 — no es un caso especial.
+  Cuando el usuario responde después, ese ajuste se acumula sobre el
+  borrador de trabajo como cualquier otro (§2.2) — no dispara el motor
+  evolutivo por sí solo, eso ocurre en el checkpoint.
 - **Timeout:** la elicitación inicial del Brief (país, industria, objetivo)
   no expira automáticamente — sin eso no hay proyecto real que investigar.
   El resto de preguntas bloqueantes tiene timeout configurable por proyecto
   (default 24h); al vencer, el agente avanza con un supuesto documentado en
-  vez de trabar el resto del grafo. Cada `ask_user` lleva un flag de
-  criticidad (`dura`/`blanda`) que decide si aplica timeout.
+  vez de trabar el resto del grafo.
+- El flag de criticidad (`dura`/`blanda`) de cada `ask_user` **no lo decide
+  el agente a su criterio**: sale directamente del triaje por impacto de
+  §3.3 (impacto alto → dura, impacto medio → blanda).
 
 ### 3.2 Reglas adicionales del agente Legal/Normativo
 
@@ -119,6 +144,39 @@ No todas las preguntas de un agente se tratan igual:
   depende de eso, lo marca como pendiente y pregunta en vez de asumir. Un
   conflicto directo no trivial entre niveles sigue la misma regla anterior.
 
+### 3.3 Cobertura proactiva de vacíos (gap analysis por impacto)
+
+Regla transversal a **todos** los agentes, no solo el Elicitador (RF-23,
+RF-24). Antes de marcar su documento como `borrador` completo, cada agente
+corre un paso explícito de auto-revisión:
+
+1. **Identificar vacíos:** listar qué aspectos relevantes de su alcance
+   quedaron sin especificar, ambiguos, o inferidos sin confirmación —
+   comparando contra una checklist propia del tipo de documento (para el
+   Elicitador es la de RF-03; para el Arquitecto incluye, por ejemplo,
+   concurrencia esperada, disponibilidad requerida, volumen de datos; para
+   el Analista, si cada hallazgo legal/de mercado relevante quedó reflejado
+   en algún requerimiento).
+2. **Clasificar por impacto estimado** en el resto del pipeline:
+   - **Alto:** cambiaría materialmente el alcance, la arquitectura o la
+     estimación si se resuelve distinto (ej. concurrencia esperada, si el
+     proyecto maneja datos sensibles). → `ask_user` **dura**, siempre se
+     pregunta, nunca se asume.
+   - **Medio:** afecta el detalle pero no la dirección general (ej. un
+     matiz de una historia de usuario). → `ask_user` **blanda**: se
+     pregunta, pero si no hay respuesta a tiempo se avanza con un supuesto
+     documentado (§3.1).
+   - **Bajo:** no cambia nada sustancial aunque se asuma distinto (ej.
+     un detalle cosmético). → se resuelve con un supuesto documentado
+     **sin preguntar**, para no generar fatiga de entrevista.
+3. El resultado de este paso (qué se preguntó, qué se asumió y con qué
+   impacto) queda como parte del documento — es lo que alimenta la sección
+   de "supuestos y riesgos" de la cotización final (§7).
+
+Esta regla es la que hace que la elicitación (y el resto del pipeline) sea
+una **entrevista dirigida por impacto**, no una lista fija de preguntas: la
+checklist mínima de RF-03/RF-04 es el piso, no el techo.
+
 ---
 
 ## 4. Motor evolutivo — algoritmo de invalidación
@@ -131,8 +189,13 @@ BusinessBrief ─┬─→ LegalFindings ─┐
                                                      └─→ Architecture ┴─→ Quote
 ```
 
-Cuando ocurre un `ChangeEvent` sobre un nodo `X` (edición humana, o una
-nueva versión de un agente):
+Un `ChangeEvent` sobre un nodo `X` **solo se dispara en un checkpoint**
+(§2.2, RF-25, RF-26) — es decir, cuando se consolida una `DocumentVersion`
+nueva, no en cada mensaje o ajuste individual sobre el borrador de trabajo.
+El `ChangeEvent` lleva el resumen consolidado de todo lo acumulado desde la
+última versión (`pending_changes[]`), no un evento por cada cambio suelto.
+
+Al ocurrir:
 
 1. Se crea la nueva `DocumentVersion` de `X` (RNF-05: queda historial).
 2. Se recorre el grafo hacia adelante desde `X`: todo nodo `Y` alcanzable se
@@ -187,6 +250,13 @@ expone qué documentos tuvieron revisión humana y cuáles no (RF-22, RNF-06).
 - **Bandeja de pendientes a nivel de Workspace** (RF-20, RNF-08): agrega las
   preguntas bloqueantes de todos los proyectos activos, para que una
   pregunta en un proyecto que el usuario no está mirando no se pierda.
+- **Confirmación de checkpoint** (RF-25, RF-26): mientras hay
+  `pending_changes[]` sin consolidar sobre un documento, el chat muestra un
+  indicador tipo "N ajustes sin confirmar en [documento]" con una acción
+  explícita "Confirmar versión". Si la conversación sobre ese documento
+  queda inactiva un rato con cambios pendientes, el propio sistema pregunta
+  "¿confirmamos esta versión o sigues ajustando?" en vez de asumir en
+  silencio que ya terminó.
 - Multi-usuario: presence (quién está conectado/escribiendo) y bloqueo
   ligero para evitar aprobaciones simultáneas conflictivas sobre la misma
   versión.

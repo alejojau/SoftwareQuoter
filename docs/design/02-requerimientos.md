@@ -21,6 +21,13 @@ Prioridad según MoSCoW: **M**ust (indispensable para el MVP), **S**hould
 | RF-03 | El sistema conduce una conversación en chat en vivo para producir un Business Brief, cubriendo como mínimo: objetivo, usuarios finales, dominio/industria, país/región, restricciones conocidas. | M | §3 Contrato de agentes (Elicitador) |
 | RF-04 | El Business Brief no pasa a estado revisable hasta cubrir esa checklist mínima. | M | §2 Estados |
 
+### Cobertura proactiva de vacíos (entrevista dirigida por impacto)
+
+| ID | Descripción | Prioridad | Ref. arquitectura |
+|---|---|---|---|
+| RF-23 | Antes de dar su documento por completo, cada agente (no solo el Elicitador) identifica explícitamente qué aspectos relevantes de su alcance quedaron sin especificar o ambiguos, no solo lo que el usuario mencionó espontáneamente. | M | §3.3 Cobertura proactiva de vacíos |
+| RF-24 | Cada vacío identificado se clasifica por impacto estimado en el resto del pipeline (alto/medio/bajo). Los de impacto alto se preguntan de forma bloqueante, los de impacto medio de forma aclaratoria, y solo los de impacto bajo se resuelven con un supuesto documentado sin interrumpir al usuario. | M | §3.3 |
+
 ### Investigación legal y de mercado
 
 | ID | Descripción | Prioridad | Ref. arquitectura |
@@ -54,6 +61,13 @@ Prioridad según MoSCoW: **M**ust (indispensable para el MVP), **S**hould
 | RF-16 | Cuando un documento cambia, el sistema invalida automáticamente todo documento dependiente aguas abajo, sin borrar las versiones anteriores. | M | §4 Motor evolutivo |
 | RF-17 | Un documento invalidado que ya estaba aprobado por un humano no se regenera automáticamente sin notificar y esperar confirmación (salvo configuración explícita de auto-regenerar). | M | §4 |
 | RF-18 | Todo evento de invalidación queda visible como entrada de actividad en el chat/timeline del proyecto. | M | §4, §6 |
+
+### Confirmación de versiones (checkpoint)
+
+| ID | Descripción | Prioridad | Ref. arquitectura |
+|---|---|---|---|
+| RF-25 | Los ajustes, aclaraciones o correcciones sucesivas sobre un documento en discusión se acumulan sobre el mismo borrador de trabajo; el sistema no crea una `DocumentVersion` nueva ni dispara el motor evolutivo por cada comentario individual. | M | §2.2 Estados, §4 Motor evolutivo |
+| RF-26 | El sistema pide confirmación explícita antes de consolidar los cambios acumulados en una nueva versión (o la detecta cuando la conversación sobre ese documento se estabiliza y pregunta). Solo en ese momento se evalúa el impacto en el resto del pipeline. | M | §4 |
 
 ### Colaboración y visibilidad
 
