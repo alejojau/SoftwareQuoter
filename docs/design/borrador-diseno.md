@@ -131,10 +131,16 @@ No todas las preguntas de un agente se tratan igual:
   Cuando el usuario responde después, se genera un `ChangeEvent` normal,
   procesado por el mismo algoritmo de invalidación de la sección 4 — no es
   un caso especial.
-- Una pregunta bloqueante no espera indefinidamente: pasado un tiempo
-  configurable sin respuesta, el agente puede avanzar igual con un supuesto
-  documentado, dejando constancia explícita de que no fue confirmado por el
-  usuario (nunca deja el proyecto trabado en silencio).
+- Una pregunta bloqueante no espera indefinidamente, **salvo una excepción**:
+  la elicitación inicial del `BusinessBrief` (país, industria, objetivo) no
+  tiene timeout, porque sin eso no hay proyecto real que investigar y no hay
+  nada aguas abajo bloqueado innecesariamente — el proyecto simplemente
+  queda en `elicitacion_en_curso`. Para el resto de preguntas bloqueantes
+  (ya con el pipeline en marcha), el timeout es **configurable por
+  proyecto**, con default de 24 horas; al vencer, el agente avanza con un
+  supuesto documentado en vez de trabar el resto del grafo. Cada llamada a
+  `ask_user` lleva un flag de criticidad (`dura`/`blanda`) que decide si
+  aplica timeout.
 
 ### 3.2 Reglas adicionales del agente Legal/Normativo
 
@@ -217,6 +223,17 @@ receptor de la cotización sepa el nivel de validación real.
 - Eventos de sistema embebidos en el mismo chat: _"Agente Legal generó
   Hallazgos Legales v2 (fuente: ...)"_, _"Requerimientos quedó obsoleto por
   cambio en Brief"_, etc. — timeline de actividad integrado, no aparte.
+- **Distinción visual `generando` vs. `esperando_respuesta`:** un documento
+  `generando` se muestra como un indicador tipo "escribiendo…" que no
+  reclama atención — el usuario puede seguir con otra cosa mientras tanto.
+  Un documento en `esperando_respuesta` se ancla como una **tarjeta de
+  pregunta explícita** en el chat (no un mensaje más que se pierde en el
+  scroll), dirigida a un rol concreto, con estado "pendiente" visible.
+- Como el sistema es multi-proyecto, además se necesita una **bandeja de
+  pendientes a nivel de Workspace** (ej. "3 preguntas esperando tu
+  respuesta" agregadas entre todos los proyectos activos) — si no, una
+  pregunta bloqueante en un proyecto que el usuario no está mirando en ese
+  momento se pierde y nunca se resuelve a tiempo.
 - Multi-usuario: presence (quién está conectado/escribiendo) y bloqueo
   ligero para evitar aprobaciones simultáneas conflictivas sobre la misma
   versión.
@@ -245,6 +262,20 @@ Todo lo anterior en detalle, más:
 9. Anexo: todos los ADRs
 10. Anexo: hallazgos legales y de mercado completos, con fuentes
 
+### 7.1 Plantilla y renderizado
+
+- **Contenido y renderizado van separados.** El Agente Arquitecto no dibuja
+  el PDF: produce una descripción estructurada de componentes, conexiones y
+  los RNF asociados a cada uno. Una capa de renderizado aparte convierte esa
+  descripción en diagrama, usando una notación estándar (tipo Mermaid/C4) en
+  vez de dejar que el LLM "dibuje" libremente — así el diagrama es
+  consistente entre versiones y se puede regenerar automáticamente cuando
+  cambia la arquitectura, sin pedirle al agente que reinvente el layout.
+- **Branding** (logo, nombre) configurable a nivel `Workspace`, con opción
+  de override por proyecto; paleta y tipografía neutras por defecto.
+- Ambos documentos (ejecutivo y técnico) comparten la misma plantilla base;
+  el técnico solo añade secciones y anexos.
+
 ---
 
 ## 8. Arquitectura técnica del propio sistema (alto nivel)
@@ -266,21 +297,25 @@ Todo lo anterior en detalle, más:
 
 ---
 
-## 9. Decidido en esta ronda
+## 9. Decidido hasta ahora
 
 - Modelo de `ask_user`: bloqueante vs. aclaratoria, bloqueo por documento no
-  por proyecto, con expiración a supuesto documentado (sección 3.1).
+  por proyecto, sin timeout solo en la elicitación inicial del Brief, 24h
+  configurable por proyecto para el resto (sección 3.1).
 - Formato de salida: dos documentos (cotización ejecutiva + documento
-  técnico) sobre la misma fuente de verdad (sección 7).
+  técnico) sobre la misma fuente de verdad, con contenido y renderizado
+  separados (diagramas por notación estándar, no dibujados por el LLM) y
+  branding a nivel `Workspace` (secciones 7 y 7.1).
 - Conflicto entre fuentes legales: nunca se resuelve solo si hay ambigüedad
   real; se marca y se escala a revisión humana (sección 3.2).
 - Jurisdicción nacional vs. local: se acumulan, no se reemplazan; local solo
   se evalúa con precisión de ubicación suficiente (sección 3.2).
+- Representación en chat: `generando` no reclama atención, `esperando_
+  respuesta` se ancla como tarjeta explícita + bandeja de pendientes a
+  nivel de Workspace, dado que el sistema es multi-proyecto (sección 6).
 
 ## 10. Abierto para siguiente ronda
 
-- Tiempo de espera exacto (timeout) antes de que una pregunta bloqueante
-  pase a supuesto documentado, y si es configurable por proyecto o fijo.
-- Plantilla visual exacta del PDF (branding, diagramas embebidos).
-- Cómo se representa visualmente en el chat un documento en
-  `esperando_respuesta` vs. uno simplemente `generando`.
+- Ninguno crítico por ahora — los puntos de la fase de detalle quedaron
+  resueltos. Lo siguiente natural es empezar a formalizar todo esto en el
+  documento de diseño completo (fase 3), o prototipar el modelo de datos.
