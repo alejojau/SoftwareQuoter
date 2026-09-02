@@ -33,6 +33,15 @@ referencia histórica).
    proveedor de IA), en el mismo formato que el sistema le exigirá al Agente
    Arquitecto para los proyectos que gestione.
 
+## Implementación
+
+El modelo de datos de la §1 de [Arquitectura y diseño](./03-arquitectura-diseno.md)
+ya está implementado como schema real en [`prisma/schema.prisma`](../../prisma/schema.prisma)
+(PostgreSQL, ver ADR-0001), con comentarios que referencian los RF/RNF que
+cada tabla o campo satisface. Es el primer artefacto de código del proyecto;
+el resto de la implementación (API, agentes, chat en vivo) se construye
+sobre este modelo.
+
 ## Cómo leer esto
 
 Cada requerimiento en el documento 2 tiene un ID (`RF-xx` funcional,
