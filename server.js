@@ -1,9 +1,9 @@
 require('dotenv').config();
-const { createApp } = require('./src/app');
+const { createHttpServer } = require('./src/httpServer');
 
 const PORT = process.env.PORT || 5000;
-const app = createApp();
+const { httpServer } = createHttpServer();
 
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`🚀 SoftwareQuoter server running on http://localhost:${PORT}`);
 });

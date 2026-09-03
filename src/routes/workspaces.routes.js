@@ -56,6 +56,14 @@ function buildWorkspacesRouter(prisma) {
       });
       await prisma.chatSession.create({ data: { projectId: project.id } });
 
+      // RF-02: quien crea el proyecto queda como miembro desde ya (rol
+      // Negocio por defecto) — si no, el control de acceso por membresía
+      // (assertProjectMember) le impediría interactuar con su propio
+      // proyecto hasta agregarse manualmente.
+      await prisma.projectMember.create({
+        data: { projectId: project.id, userId: req.currentUser.id, roles: ['NEGOCIO'] },
+      });
+
       res.status(201).json(project);
     })
   );

@@ -5,15 +5,15 @@ const buildProjectsRouter = require('./projects.routes');
 const buildDocumentNodesRouter = require('./documentNodes.routes');
 const buildPendingQuestionsRouter = require('./pendingQuestions.routes');
 
-function buildRouter(prisma) {
+function buildRouter(prisma, emitters) {
   const router = Router();
 
   router.use(currentUser(prisma));
 
   router.use('/workspaces', buildWorkspacesRouter(prisma));
-  router.use('/projects', buildProjectsRouter(prisma));
-  router.use('/document-nodes', buildDocumentNodesRouter(prisma));
-  router.use('/pending-questions', buildPendingQuestionsRouter(prisma));
+  router.use('/projects', buildProjectsRouter(prisma, emitters));
+  router.use('/document-nodes', buildDocumentNodesRouter(prisma, emitters));
+  router.use('/pending-questions', buildPendingQuestionsRouter(prisma, emitters));
 
   return router;
 }

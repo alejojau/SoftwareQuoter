@@ -5,13 +5,22 @@ const { getPrismaClient } = require('./lib/prisma');
 const buildRouter = require('./routes');
 const errorHandler = require('./middleware/errorHandler');
 
+const noopEmitters = {
+  emitMessage: () => {},
+  emitDocumentEvent: () => {},
+};
+
 /**
- * Fábrica de la app Express. Recibe el cliente Prisma por parámetro (en
- * vez de importarlo directo en cada módulo) para poder inyectar un cliente
- * de prueba en los tests sin necesitar una base de datos real.
+ * Fábrica de la app Express. Recibe el cliente Prisma y los emisores del
+ * chat en vivo por parámetro (en vez de importarlos directo en cada
+ * módulo) para poder inyectar dobles de prueba sin necesitar una base de
+ * datos ni un servidor de WebSocket reales. `emitters` es opcional y por
+ * defecto no hace nada — así la API REST funciona igual sin el gateway de
+ * WebSocket (src/realtime/chatGateway.js) montado encima.
  */
-function createApp({ prisma = getPrismaClient() } = {}) {
+function createApp({ prisma = getPrismaClient(), emitters = {} } = {}) {
   const app = express();
+  const safeEmitters = { ...noopEmitters, ...emitters };
 
   app.use(cors());
   app.use(express.json());
@@ -20,7 +29,7 @@ function createApp({ prisma = getPrismaClient() } = {}) {
     res.json({ status: 'Server is running', timestamp: new Date().toISOString() });
   });
 
-  app.use('/api', buildRouter(prisma));
+  app.use('/api', buildRouter(prisma, safeEmitters));
 
   // Sirve el frontend (client/build) una vez exista — ver README.
   app.use(express.static(path.join(__dirname, '..', 'client', 'build')));

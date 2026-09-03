@@ -2,6 +2,8 @@ const { Router } = require('express');
 const { z } = require('zod');
 const asyncHandler = require('../middleware/asyncHandler');
 const { NotFoundError } = require('../errors/AppError');
+const { assertProjectMember } = require('../services/authorization');
+const { createMessage } = require('../services/messages.service');
 
 const addMemberSchema = z.object({
   userId: z.string().min(1),
@@ -13,7 +15,7 @@ const createMessageSchema = z.object({
   documentNodeId: z.string().optional(),
 });
 
-function buildProjectsRouter(prisma) {
+function buildProjectsRouter(prisma, emitters) {
   const router = Router();
 
   router.get(
@@ -77,9 +79,12 @@ function buildProjectsRouter(prisma) {
     })
   );
 
+  // RF-02: solo miembros del proyecto pueden leer o escribir en su chat.
   router.get(
     '/:id/messages',
     asyncHandler(async (req, res) => {
+      await assertProjectMember(prisma, req.params.id, req.currentUser.id);
+
       const chatSession = await prisma.chatSession.findUnique({
         where: { projectId: req.params.id },
       });
@@ -93,29 +98,25 @@ function buildProjectsRouter(prisma) {
     })
   );
 
-  // Interfaz REST simple para el chat (§6). El transporte en vivo por
-  // WebSocket (ADR-0003) todavía no está implementado — este endpoint es
-  // la base de datos sobre la que se conecta ese transporte más adelante,
-  // y ya sirve para probar el resto del flujo sin él.
+  // Interfaz REST del chat (§6), además del transporte en vivo por
+  // WebSocket (ADR-0003, src/realtime/chatGateway.js) — comparten la
+  // misma lógica de creación de mensaje (messages.service) para no
+  // duplicarla, y ambos emiten a los clientes conectados por socket.
   router.post(
     '/:id/messages',
     asyncHandler(async (req, res) => {
       const data = createMessageSchema.parse(req.body);
-      const chatSession = await prisma.chatSession.findUnique({
-        where: { projectId: req.params.id },
-      });
-      if (!chatSession) throw new NotFoundError('Proyecto sin chat asociado');
+      await assertProjectMember(prisma, req.params.id, req.currentUser.id);
 
-      const message = await prisma.message.create({
-        data: {
-          chatSessionId: chatSession.id,
-          projectId: req.params.id,
-          authorType: 'USUARIO',
-          authorUserId: req.currentUser.id,
-          content: data.content,
-          documentNodeId: data.documentNodeId,
-        },
+      const message = await createMessage({
+        prisma,
+        projectId: req.params.id,
+        actor: { type: 'USUARIO', userId: req.currentUser.id },
+        content: data.content,
+        documentNodeId: data.documentNodeId,
       });
+
+      emitters.emitMessage(req.params.id, message);
       res.status(201).json(message);
     })
   );

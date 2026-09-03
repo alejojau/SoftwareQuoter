@@ -31,10 +31,17 @@ class UnauthorizedError extends AppError {
   }
 }
 
+class ForbiddenError extends AppError {
+  constructor(message = 'No tienes acceso a este recurso') {
+    super(message, 403);
+  }
+}
+
 module.exports = {
   AppError,
   NotFoundError,
   ValidationError,
   ConflictError,
   UnauthorizedError,
+  ForbiddenError,
 };

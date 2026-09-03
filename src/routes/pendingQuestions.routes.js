@@ -2,10 +2,12 @@ const { Router } = require('express');
 const { z } = require('zod');
 const asyncHandler = require('../middleware/asyncHandler');
 const { NotFoundError, ConflictError } = require('../errors/AppError');
+const { assertProjectMember } = require('../services/authorization');
+const { createMessage } = require('../services/messages.service');
 
 const answerSchema = z.object({ answerText: z.string().min(1) });
 
-function buildPendingQuestionsRouter(prisma) {
+function buildPendingQuestionsRouter(prisma, emitters) {
   const router = Router();
 
   // Responder un ask_user (§3.1). Deja la respuesta también como mensaje
@@ -17,6 +19,7 @@ function buildPendingQuestionsRouter(prisma) {
       const data = answerSchema.parse(req.body);
       const question = await prisma.pendingQuestion.findUnique({ where: { id: req.params.id } });
       if (!question) throw new NotFoundError('Pregunta no encontrada');
+      await assertProjectMember(prisma, question.projectId, req.currentUser.id);
       if (question.status !== 'ABIERTA') {
         throw new ConflictError('Esta pregunta ya no está abierta');
       }
@@ -30,22 +33,15 @@ function buildPendingQuestionsRouter(prisma) {
         },
       });
 
-      const chatSession = await prisma.chatSession.findUnique({
-        where: { projectId: question.projectId },
+      const message = await createMessage({
+        prisma,
+        projectId: question.projectId,
+        actor: { type: 'USUARIO', userId: req.currentUser.id },
+        content: data.answerText,
+        documentNodeId: question.documentNodeId,
       });
-      if (chatSession) {
-        await prisma.message.create({
-          data: {
-            chatSessionId: chatSession.id,
-            projectId: question.projectId,
-            authorType: 'USUARIO',
-            authorUserId: req.currentUser.id,
-            type: 'TEXTO',
-            content: data.answerText,
-            documentNodeId: question.documentNodeId,
-          },
-        });
-      }
+
+      emitters.emitMessage(question.projectId, message);
 
       res.json(updated);
     })
