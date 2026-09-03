@@ -33,6 +33,25 @@ referencia histórica).
    proveedor de IA), en el mismo formato que el sistema le exigirá al Agente
    Arquitecto para los proyectos que gestione.
 
+## Implementación
+
+- **Modelo de datos** (§1 de [Arquitectura y diseño](./03-arquitectura-diseno.md)):
+  implementado como schema real en [`prisma/schema.prisma`](../../prisma/schema.prisma)
+  (PostgreSQL, ver ADR-0001), con comentarios que referencian los RF/RNF
+  que cada tabla o campo satisface.
+- **API REST**: en [`src/`](../../src/), organizada en rutas → lógica de
+  dominio pura → Prisma. La lógica del motor evolutivo (§4) y del
+  checkpoint de versiones (RF-25/RF-26) vive en `src/domain/`, sin
+  depender de Prisma, así que se prueba sin necesitar una base de datos
+  real (ver [`tests/`](../../tests/)). Todavía **no** incluye el
+  transporte en vivo por WebSocket (ADR-0003) ni la ejecución real de
+  agentes de IA (ADR-0004/ADR-0002) — esos quedan como siguiente bloque de
+  trabajo; el endpoint de checkpoint ya deja el punto de enganche
+  (`REGENERANDO`) donde ese futuro worker toma el trabajo.
+
+El resto de la implementación (chat en vivo, agentes, generación de PDF) se
+construye sobre esta base.
+
 ## Cómo leer esto
 
 Cada requerimiento en el documento 2 tiene un ID (`RF-xx` funcional,

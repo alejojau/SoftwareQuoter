@@ -1,0 +1,389 @@
+// SoftwareQuoter — modelo de datos
+//
+// Implementa el modelo de dominio de docs/design/03-arquitectura-diseno.md §1,
+// extendido con las tablas concretas que los requerimientos funcionales
+// exigen (preguntas de ask_user, autoría de mensajes, corridas de
+// invalidación). Los IDs de requerimiento (RF-xx/RNF-xx) referenciados en
+// los comentarios están definidos en docs/design/02-requerimientos.md.
+//
+// Nota (ADR-0001): las sub-estructuras LegalFinding, MarketFinding y ADR no
+// tienen tabla propia — viven como JSON dentro de DocumentVersion.content,
+// tal como decide ese ADR.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum ProjectRole {
+  NEGOCIO
+  ANALISTA
+  ARQUITECTO
+}
+
+/// Estado derivado/informativo del proyecto (§2.1). No es la fuente de
+/// verdad del progreso real — eso lo dan los estados de cada DocumentNode —
+/// pero se mantiene como campo cacheado para listar proyectos rápido.
+enum ProjectState {
+  NUEVO
+  ELICITACION_EN_CURSO
+  INVESTIGACION_EN_CURSO
+  REQUERIMIENTOS_EN_CONSOLIDACION
+  REQUERIMIENTOS_LISTOS
+  DISENO_EN_CURSO
+  COTIZACION_GENERADA
+  EN_REVISION
+  PAUSADO
+}
+
+enum DocumentType {
+  BUSINESS_BRIEF
+  LEGAL_FINDINGS
+  MARKET_FINDINGS
+  REQUIREMENTS
+  SCOPE
+  ARCHITECTURE_DOC
+  QUOTE
+}
+
+/// Estados de DocumentNode (§2.2). El ciclo borrador ⇄ en_revision_humana
+/// no crea versiones nuevas (RF-25) — solo el paso a APROBADO, en un
+/// checkpoint, consolida una DocumentVersion (RF-26).
+enum DocumentState {
+  PENDIENTE
+  GENERANDO
+  ESPERANDO_RESPUESTA
+  BORRADOR
+  EN_REVISION_HUMANA
+  APROBADO
+  OBSOLETO
+  REGENERANDO
+}
+
+enum AgentType {
+  ELICITADOR
+  LEGAL
+  MERCADO
+  ANALISTA_REQUERIMIENTOS
+  ALCANCE_ESTIMADOR
+  ARQUITECTO
+  GENERADOR_COTIZACION
+  ORQUESTADOR
+}
+
+enum MessageAuthorType {
+  USUARIO
+  AGENTE
+  SISTEMA
+}
+
+enum MessageType {
+  TEXTO
+  EVENTO_SISTEMA
+  PREGUNTA_ASK_USER
+  CAMBIO_MARCADO
+}
+
+/// Criticidad de un ask_user (§3.1), decidida por el triaje de impacto de
+/// §3.3, no a criterio libre del agente.
+enum AskUserCriticality {
+  DURA
+  BLANDA
+}
+
+enum PendingQuestionStatus {
+  ABIERTA
+  RESPONDIDA
+  EXPIRADA_CON_SUPUESTO
+}
+
+enum ChangeOrigin {
+  EDICION_HUMANA
+  REGENERACION_AGENTE
+}
+
+enum InvalidationRunState {
+  EN_CURSO
+  COMPLETADO
+}
+
+enum ApprovedByType {
+  USUARIO
+  AGENTE
+}
+
+// ---------------------------------------------------------------------------
+// Workspace / usuarios / proyectos
+// ---------------------------------------------------------------------------
+
+model Workspace {
+  id              String   @id @default(cuid())
+  name            String
+  /// Branding a nivel Workspace (§7.1); override por proyecto vive en Project.
+  brandingLogoUrl String?
+  createdAt       DateTime @default(now())
+
+  members  WorkspaceMember[]
+  projects Project[]
+
+  @@map("workspaces")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  createdAt DateTime @default(now())
+
+  workspaceMemberships WorkspaceMember[]
+  projectMemberships   ProjectMember[]
+  messages             Message[]
+  approvedVersions     DocumentVersion[] @relation("VersionApprovedByUser")
+  answeredQuestions    PendingQuestion[] @relation("QuestionAnsweredByUser")
+
+  @@map("users")
+}
+
+model WorkspaceMember {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  joinedAt    DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@map("workspace_members")
+}
+
+/// RF-01: proyectos aislados entre sí (RNF-02) dentro de un Workspace,
+/// que se pueden pausar y retomar.
+model Project {
+  id              String       @id @default(cuid())
+  workspaceId     String
+  name            String
+  description     String?
+  state           ProjectState @default(NUEVO)
+  /// Override de branding del Workspace para este proyecto (§7.1).
+  brandingLogoUrl String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  pausedAt        DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  members          ProjectMember[]
+  messages         Message[]
+  documentNodes    DocumentNode[]
+  changeEvents     ChangeEvent[]
+  pendingQuestions PendingQuestion[]
+
+  @@map("projects")
+}
+
+/// RF-02: un usuario puede tener varios roles en el mismo proyecto, y
+/// roles distintos en proyectos distintos.
+model ProjectMember {
+  id        String        @id @default(cuid())
+  projectId String
+  userId    String
+  roles     ProjectRole[]
+  joinedAt  DateTime      @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+// ---------------------------------------------------------------------------
+// Chat en vivo (§6)
+// ---------------------------------------------------------------------------
+
+/// 1:1 con Project. Se modela como entidad propia (no embebida en Project)
+/// para dejar espacio a metadatos de sesión (presence, etc.) sin ensuciar
+/// la entidad Project.
+model ChatSession {
+  id        String   @id @default(cuid())
+  projectId String   @unique
+  createdAt DateTime @default(now())
+
+  messages Message[]
+
+  @@map("chat_sessions")
+}
+
+model Message {
+  id             String            @id @default(cuid())
+  chatSessionId  String
+  projectId      String
+  authorType     MessageAuthorType
+  authorUserId   String?
+  authorAgent    AgentType?
+  type           MessageType       @default(TEXTO)
+  content        String
+  /// Documento al que este mensaje hace referencia (respuesta a una
+  /// pregunta, evento de sistema sobre X, etc.), cuando aplica.
+  documentNodeId String?
+  createdAt      DateTime          @default(now())
+
+  chatSession  ChatSession   @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  authorUser   User?         @relation(fields: [authorUserId], references: [id])
+  documentNode DocumentNode? @relation(fields: [documentNodeId], references: [id])
+
+  @@index([chatSessionId, createdAt])
+  @@map("messages")
+}
+
+// ---------------------------------------------------------------------------
+// Documentos versionados y el motor evolutivo (§1, §2.2, §4)
+// ---------------------------------------------------------------------------
+
+model DocumentNode {
+  id               String        @id @default(cuid())
+  projectId        String
+  type             DocumentType
+  state            DocumentState @default(PENDIENTE)
+  currentVersionId String?       @unique
+  /// RF-25: resumen de ajustes acumulados sobre el borrador de trabajo
+  /// desde la última DocumentVersion confirmada — no crea versiones por
+  /// sí solo, se consolida en el checkpoint (RF-26).
+  pendingChanges   Json?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  project          Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  currentVersion   DocumentVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id])
+  versions         DocumentVersion[] @relation("DocumentVersions")
+  messages         Message[]
+  changeEvents     ChangeEvent[]
+  pendingQuestions PendingQuestion[]
+
+  @@unique([projectId, type])
+  @@map("document_nodes")
+}
+
+/// RNF-05: nunca se sobrescribe ni se borra — cada regeneración crea una
+/// fila nueva. inputsUsados es la relación que forma el grafo de
+/// dependencias (§1) — no hace falta una tabla de aristas aparte más allá
+/// del join table que Prisma requiere para la relación muchos-a-muchos.
+model DocumentVersion {
+  id                String          @id @default(cuid())
+  documentNodeId    String
+  number            Int
+  /// Contenido estructurado (Brief, LegalFinding[], MarketFinding[], texto
+  /// de Requirements/Scope, ArchitectureDoc + ADR[], etc. — ver ADR-0001).
+  content           Json
+  generatedByAgent  AgentType?
+  generatedByUserId String?
+  approvedByType    ApprovedByType?
+  approvedByUserId  String?
+  approvedAt        DateTime?
+  createdAt         DateTime        @default(now())
+
+  documentNode    DocumentNode  @relation("DocumentVersions", fields: [documentNodeId], references: [id], onDelete: Cascade)
+  currentOf       DocumentNode? @relation("CurrentVersion")
+  generatedByUser User?         @relation("VersionApprovedByUser", fields: [generatedByUserId], references: [id])
+
+  /// Otras versiones que esta versión usó como input (p.ej. Requirements
+  /// vX usó BusinessBrief vY + LegalFindings vZ).
+  inputsUsados  DocumentVersionInput[] @relation("VersionInputs")
+  /// Versiones que usaron esta versión como input (para recorrer el grafo
+  /// hacia adelante en el algoritmo de invalidación, §4).
+  usedAsInputBy DocumentVersionInput[] @relation("VersionUsedAsInput")
+
+  changeEventsTriggered ChangeEvent[]
+
+  @@unique([documentNodeId, number])
+  @@map("document_versions")
+}
+
+/// Tabla de aristas explícita para la relación muchos-a-muchos de
+/// "inputs_usados[]" entre versiones (§1 del modelo de dominio).
+model DocumentVersionInput {
+  id             String @id @default(cuid())
+  versionId      String
+  inputVersionId String
+
+  version      DocumentVersion @relation("VersionInputs", fields: [versionId], references: [id], onDelete: Cascade)
+  inputVersion DocumentVersion @relation("VersionUsedAsInput", fields: [inputVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([versionId, inputVersionId])
+  @@map("document_version_inputs")
+}
+
+/// Se dispara solo en un checkpoint (RF-25/RF-26), nunca por cada mensaje
+/// individual — ver §4.
+model ChangeEvent {
+  id                 String       @id @default(cuid())
+  projectId          String
+  documentNodeId     String
+  triggeredVersionId String
+  origin             ChangeOrigin
+  createdAt          DateTime     @default(now())
+
+  project          Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  documentNode     DocumentNode    @relation(fields: [documentNodeId], references: [id], onDelete: Cascade)
+  triggeredVersion DocumentVersion @relation(fields: [triggeredVersionId], references: [id], onDelete: Cascade)
+
+  invalidationRun InvalidationRun?
+
+  @@map("change_events")
+}
+
+model InvalidationRun {
+  id                 String               @id @default(cuid())
+  changeEventId      String               @unique
+  /// IDs de DocumentNode marcados obsoletos por esta corrida.
+  invalidatedNodeIds Json
+  /// IDs de DocumentNode que ya terminaron de regenerarse.
+  regeneratedNodeIds Json
+  state              InvalidationRunState @default(EN_CURSO)
+  createdAt          DateTime             @default(now())
+  completedAt        DateTime?
+
+  changeEvent ChangeEvent @relation(fields: [changeEventId], references: [id], onDelete: Cascade)
+
+  @@map("invalidation_runs")
+}
+
+// ---------------------------------------------------------------------------
+// ask_user y bandeja de pendientes (§3.1, §3.3, §6, RF-20, RNF-08)
+// ---------------------------------------------------------------------------
+
+/// Una fila por cada ask_user emitido. La bandeja de pendientes de
+/// Workspace (RF-20) es una consulta sobre esta tabla filtrando por
+/// status = ABIERTA a través de todos los proyectos del usuario.
+model PendingQuestion {
+  id               String                @id @default(cuid())
+  projectId        String
+  documentNodeId   String
+  targetRole       ProjectRole?
+  question         String
+  criticality      AskUserCriticality
+  status           PendingQuestionStatus @default(ABIERTA)
+  /// Solo aplica cuando hay timeout (§3.1): null para la elicitación
+  /// inicial del Brief, que nunca expira automáticamente.
+  expiresAt        DateTime?
+  createdAt        DateTime              @default(now())
+  answeredAt       DateTime?
+  answeredByUserId String?
+
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  documentNode DocumentNode @relation(fields: [documentNodeId], references: [id], onDelete: Cascade)
+  answeredBy   User?        @relation("QuestionAnsweredByUser", fields: [answeredByUserId], references: [id])
+
+  @@index([status, targetRole])
+  @@map("pending_questions")
+}
